@@ -42,8 +42,8 @@ Describe "PSCredentialStore Module" {
     Context "Credential Management" -Tag "Integration" {
         # These tests modify the system credential store - only run them in a controlled environment
         BeforeEach {
-            # Generate a unique target name for testing to avoid conflicts
-            $script:targetName = "PSCredentialStoreTest_$(Get-Random)"
+            # Generate a unique ID for testing to avoid conflicts
+            $script:credentialId = "PSCredentialStoreTest_$(Get-Random)"
             $script:testUser = "testuser"
             $script:testPassword = ConvertTo-SecureString "TestP@ssword123" -AsPlainText -Force
             
@@ -53,43 +53,47 @@ Describe "PSCredentialStore Module" {
         
         AfterEach {
             # Clean up any leftover credentials
-            Remove-StoredCredential -Target $script:targetName -Force -ErrorAction SilentlyContinue
+            Remove-StoredCredential -Id $script:credentialId -Force -ErrorAction SilentlyContinue
         }
         
         It "Should store a credential" -Skip:([bool]$env:CI) {
             # Store a credential
-            $result = Set-StoredCredential -Target $script:targetName -Credential $script:testCred
-            $result | Should -BeTrue
+            $result = Set-StoredCredential -Id $script:credentialId -Credential $script:testCred
+            $result | Should -Not -BeNullOrEmpty
+            $result.Id | Should -Be $script:credentialId
             
             # Verify it was stored correctly
-            $exists = Test-StoredCredential -Target $script:targetName
+            $exists = Test-StoredCredential -Id $script:credentialId
             $exists | Should -BeTrue
         }
         
         It "Should retrieve a credential" -Skip:([bool]$env:CI) {
             # Store a credential
-            Set-StoredCredential -Target $script:targetName -Credential $script:testCred | Should -BeTrue
+            Set-StoredCredential -Id $script:credentialId -Credential $script:testCred | Should -Not -BeNullOrEmpty
             
             # Verify it was stored correctly
-            $retrievedCred = Get-StoredCredential -Target $script:targetName
+            $retrievedCred = Get-StoredCredential -Id $script:credentialId
             $retrievedCred | Should -Not -BeNullOrEmpty
+            $retrievedCred.Id | Should -Be $script:credentialId
+            $retrievedCred.UserName | Should -Be $script:testUser
             
             # On macOS the username might be stored differently depending on how security is implemented
             # So we'll test that we can at least retrieve a credential and the password is correct
-            $retrievedCred.GetNetworkCredential().Password | Should -Be "TestP@ssword123"
+            $retrievedCred.Credential.GetNetworkCredential().Password | Should -Be "TestP@ssword123"
         }
         
         It "Should remove a credential" -Skip:([bool]$env:CI) {
             # Store a credential first
-            Set-StoredCredential -Target $script:targetName -Credential $script:testCred | Should -BeTrue
-            Test-StoredCredential -Target $script:targetName | Should -BeTrue
+            Set-StoredCredential -Id $script:credentialId -Credential $script:testCred | Should -Not -BeNullOrEmpty
+            Test-StoredCredential -Id $script:credentialId | Should -BeTrue
             
             # Remove it
-            $result = Remove-StoredCredential -Target $script:targetName -Force
-            $result | Should -BeTrue
+            $result = Remove-StoredCredential -Id $script:credentialId -Force
+            $result | Should -Not -BeNullOrEmpty
+            $result.Status | Should -Be "Success"
             
             # Verify it's gone
-            Test-StoredCredential -Target $script:targetName | Should -BeFalse
+            Test-StoredCredential -Id $script:credentialId | Should -BeFalse
         }
     }
     
@@ -108,7 +112,7 @@ Describe "PSCredentialStore Module" {
         It "Should use Windows credential manager when on Windows" {
             Mock -ModuleName PSCredentialStore Invoke-WindowsCredentialManager { return $true }
             
-            Set-StoredCredential -Target "MockTest" -Credential $script:testCred
+            Set-StoredCredential -Id "MockTest" -Credential $script:testCred
             
             Should -Invoke -ModuleName PSCredentialStore -CommandName Invoke-WindowsCredentialManager -Times 1
         }
@@ -118,7 +122,7 @@ Describe "PSCredentialStore Module" {
             Mock -ModuleName PSCredentialStore Get-OSPlatform { return "MacOS" }
             Mock -ModuleName PSCredentialStore Invoke-MacOSKeychain { return $true }
             
-            Set-StoredCredential -Target "MockTest" -Credential $script:testCred
+            Set-StoredCredential -Id "MockTest" -Credential $script:testCred
             
             Should -Invoke -ModuleName PSCredentialStore -CommandName Invoke-MacOSKeychain -Times 1
         }
@@ -128,7 +132,7 @@ Describe "PSCredentialStore Module" {
             Mock -ModuleName PSCredentialStore Get-OSPlatform { return "Linux" }
             Mock -ModuleName PSCredentialStore Invoke-LinuxKeyring { return $true }
             
-            Set-StoredCredential -Target "MockTest" -Credential $script:testCred
+            Set-StoredCredential -Id "MockTest" -Credential $script:testCred
             
             Should -Invoke -ModuleName PSCredentialStore -CommandName Invoke-LinuxKeyring -Times 1
         }
@@ -144,7 +148,7 @@ Describe "PSCredentialStore Module" {
                         [PSCredential]::new("user_$Target", (ConvertTo-SecureString "pass_$Target" -AsPlainText -Force))
                     }
                     $result = Get-StoredCredential
-                    $result.Target | Should -Be "foo","bar"
+                    $result.Id | Should -Be "foo","bar"
                     $result.Credential.GetNetworkCredential().Password | Should -Be "pass_foo","pass_bar"
                 }
             }
@@ -159,7 +163,7 @@ Describe "PSCredentialStore Module" {
                         [PSCredential]::new("user_$Target", (ConvertTo-SecureString "pass_$Target" -AsPlainText -Force))
                     }
                     $result = Get-StoredCredential
-                    $result.Target | Should -Be "foo","bar"
+                    $result.Id | Should -Be "foo","bar"
                     $result.Credential.GetNetworkCredential().Password | Should -Be "pass_foo","pass_bar"
                 }
             }

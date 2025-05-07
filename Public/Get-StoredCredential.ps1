@@ -6,51 +6,57 @@ function Get-StoredCredential {
         Gets a previously saved credential from the Windows Credential Manager, MacOS Keychain, 
         or Linux Keyring/Secret Service depending on the platform.
         
-        When run without a Target parameter, returns a list of all stored credentials.
-    .PARAMETER Target
+        When run without an Id parameter, returns a list of all stored credentials.
+    .PARAMETER Id
         A unique identifier for the credential to retrieve. If not specified, all credentials will be listed.
     .EXAMPLE
-        $cred = Get-StoredCredential -Target "MyApp"
+        $cred = Get-StoredCredential -Id "MyApp"
         # Retrieves the stored credential for "MyApp"
     .EXAMPLE
         Get-StoredCredential
         # Lists all stored credentials
     .OUTPUTS
-        [System.Management.Automation.PSCredential] if a specific credential is requested
-        [PSObject[]] with Target and Credential properties when listing all credentials
+        [PSObject] with Id, UserName, and Credential properties
+        [PSObject[]] with Id, UserName, and Credential properties when listing all credentials
     #>
     [CmdletBinding()]
-    [OutputType([System.Management.Automation.PSCredential], [PSObject[]])]
+    [OutputType([PSObject], [PSObject[]])]
     param (
-        [Parameter(Mandatory = $false, Position = 0)]
-        [string]$Target
+        [Parameter(Mandatory = $false, Position = 0, ValueFromPipeline = $true, ValueFromPipelineByPropertyName = $true)]
+        [string]$Id
     )
     
-    # If Target is provided, get a specific credential
-    if ($Target) {
-        # Detect platform and use appropriate implementation using PowerShell 7 switch expressions
-        $credential = switch (Get-OSPlatform) {
-            'Windows' { Invoke-WindowsCredentialManager -Operation Get -Target $Target }
-            'MacOS'   { Invoke-MacOSKeychain -Operation Get -Target $Target }
-            'Linux'   { Invoke-LinuxKeyring -Operation Get -Target $Target }
+    process {
+        # If Id is provided, get a specific credential
+        if ($Id) {
+            # Detect platform and use appropriate implementation using PowerShell 7 switch expressions
+            $credential = switch (Get-OSPlatform) {
+                'Windows' { Invoke-WindowsCredentialManager -Operation Get -Target $Id }
+                'MacOS'   { Invoke-MacOSKeychain -Operation Get -Target $Id }
+                'Linux'   { Invoke-LinuxKeyring -Operation Get -Target $Id }
+            }
+            
+            # Return the credential with appropriate verbose message
+            if ($null -ne $credential) {
+                Write-Verbose "Successfully retrieved credential for ID '$Id'"
+                # Return a custom object with Id, UserName and Credential properties
+                return [PSCustomObject]@{
+                    Id = $Id
+                    UserName = $credential.UserName
+                    Credential = $credential
+                }
+            } else {
+                Write-Verbose "No credential found for ID '$Id'"
+                return $null
+            }
         }
-        
-        # Return the credential with appropriate verbose message
-        if ($null -ne $credential) {
-            Write-Verbose "Successfully retrieved credential for target '$Target'"
-            return $credential
-        } else {
-            Write-Verbose "No credential found for target '$Target'"
-            return $null
-        }
-    }
-    # Otherwise, list all credentials
-    else {
-        Write-Verbose "Listing all stored credentials"
-        switch (Get-OSPlatform) {
-            'Windows' {
-                # Load CredApi P/Invoke definitions if not already loaded
-                Add-Type -TypeDefinition @"
+        # Otherwise, list all credentials
+        else {
+            Write-Verbose "Listing all stored credentials"
+            switch (Get-OSPlatform) {
+                'Windows' {
+                    # Load CredApi P/Invoke definitions if not already loaded
+                    Add-Type -TypeDefinition @"
 using System;
 using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.ComTypes;
@@ -79,44 +85,61 @@ public static class CredApi {
 }
 "@ -ErrorAction SilentlyContinue
 
-                $count = 0
-                $ptr = [IntPtr]::Zero
-                if ([CredApi]::CredEnumerate('*', 0, [ref]$count, [ref]$ptr)) {
-                    for ($i = 0; $i -lt $count; $i++) {
-                        $currentPtr = [Runtime.InteropServices.Marshal]::ReadIntPtr($ptr, $i * [IntPtr]::Size)
-                        $credStruct = [Runtime.InteropServices.Marshal]::PtrToStructure($currentPtr, [Type][CREDENTIAL])
-                        if ($credStruct.Type -eq 1) {
-                            $pwd = if ($credStruct.CredentialBlobSize -gt 0) { [Runtime.InteropServices.Marshal]::PtrToStringUni($credStruct.CredentialBlob, $credStruct.CredentialBlobSize/2) } else { '' }
-                            $securePwd = ConvertTo-SecureString $pwd -AsPlainText -Force
-                            $pscred = [PSCredential]::new($credStruct.UserName, $securePwd)
-                            [PSCustomObject]@{ Target = $credStruct.TargetName; Credential = $pscred }
+                    $count = 0
+                    $ptr = [IntPtr]::Zero
+                    if ([CredApi]::CredEnumerate('*', 0, [ref]$count, [ref]$ptr)) {
+                        for ($i = 0; $i -lt $count; $i++) {
+                            $currentPtr = [Runtime.InteropServices.Marshal]::ReadIntPtr($ptr, $i * [IntPtr]::Size)
+                            $credStruct = [Runtime.InteropServices.Marshal]::PtrToStructure($currentPtr, [Type][CREDENTIAL])
+                            if ($credStruct.Type -eq 1) {
+                                $password = if ($credStruct.CredentialBlobSize -gt 0) { [Runtime.InteropServices.Marshal]::PtrToStringUni($credStruct.CredentialBlob, $credStruct.CredentialBlobSize/2) } else { '' }
+                                $securePassword = ConvertTo-SecureString $password -AsPlainText -Force
+                                $pscred = [PSCredential]::new($credStruct.UserName, $securePassword)
+                                [PSCustomObject]@{ 
+                                    Id = $credStruct.TargetName
+                                    UserName = $credStruct.UserName
+                                    Credential = $pscred 
+                                }
+                            }
                         }
-                    }
-                    [CredApi]::CredFree($ptr)
-                }
-            }
-            'MacOS' {
-                # Use metadata file to list stored targets
-                $metadataFile = Join-Path $env:HOME '.pscredstore_metadata'
-                if (Test-Path $metadataFile) {
-                    try {
-                        $data = ConvertFrom-Json (Get-Content $metadataFile -Raw) -ErrorAction Stop
-                        foreach ($target in $data.PSObject.Properties.Name) {
-                            $cred = Invoke-MacOSKeychain -Operation Get -Target $target
-                            [PSCustomObject]@{ Target = $target; Credential = $cred }
-                        }
-                    }
-                    catch {
-                        Write-Warning "Failed to read metadata: $_"
+                        [CredApi]::CredFree($ptr)
                     }
                 }
-            }
-            'Linux' {
-                # Enumerate items via secret-tool
-                $targets = Get-LinuxTargets
-                foreach ($target in $targets) {
-                    $cred = Invoke-LinuxKeyring -Operation Get -Target $target
-                    [PSCustomObject]@{ Target = $target; Credential = $cred }
+                'MacOS' {
+                    # Use metadata file to list stored targets
+                    $metadataFile = Join-Path $env:HOME '.pscredstore_metadata'
+                    if (Test-Path $metadataFile) {
+                        try {
+                            $data = ConvertFrom-Json (Get-Content $metadataFile -Raw) -ErrorAction Stop
+                            foreach ($target in $data.PSObject.Properties.Name) {
+                                $cred = Invoke-MacOSKeychain -Operation Get -Target $target
+                                if ($null -ne $cred) {
+                                    [PSCustomObject]@{ 
+                                        Id = $target
+                                        UserName = $cred.UserName
+                                        Credential = $cred 
+                                    }
+                                }
+                            }
+                        }
+                        catch {
+                            Write-Warning "Failed to read metadata: $_"
+                        }
+                    }
+                }
+                'Linux' {
+                    # Enumerate items via secret-tool
+                    $targets = Get-LinuxTargets
+                    foreach ($target in $targets) {
+                        $cred = Invoke-LinuxKeyring -Operation Get -Target $target
+                        if ($null -ne $cred) {
+                            [PSCustomObject]@{ 
+                                Id = $target
+                                UserName = $cred.UserName
+                                Credential = $cred 
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -139,6 +162,7 @@ function Get-LinuxTargets {
     if ($?) {
         return $attrs | ForEach-Object {
             if ($_ -match '^target\s*=\s*"?(.*)"?$') { $Matches[1] }
+            elseif ($_ -match '^id\s*=\s*"?(.*)"?$') { $Matches[1] }  # Support new id attribute
         } | Select-Object -Unique
     }
     return @()

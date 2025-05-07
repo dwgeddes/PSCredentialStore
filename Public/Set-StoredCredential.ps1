@@ -5,27 +5,29 @@ function Set-StoredCredential {
     .DESCRIPTION
         Saves a credential to the Windows Credential Manager, MacOS Keychain, 
         or Linux Keyring/Secret Service depending on the platform.
-    .PARAMETER Target
+    .PARAMETER Id
         A unique identifier for the credential
     .PARAMETER Credential
         The PowerShell credential object to store
     .PARAMETER Force
-        If specified, overwrites any existing credential with the same Target name without prompting
+        If specified, overwrites any existing credential with the same Id without prompting
     .EXAMPLE
         $cred = Get-Credential
-        Set-StoredCredential -Target "MyApp" -Credential $cred
+        Set-StoredCredential -Id "MyApp" -Credential $cred
         # Stores the credential in the native OS credential store
     .EXAMPLE
-        Set-StoredCredential -Target "DatabaseAccess" -UserName "dbuser" -Password (ConvertTo-SecureString "P@ssw0rd" -AsPlainText -Force)
+        Set-StoredCredential -Id "DatabaseAccess" -UserName "dbuser" -Password (ConvertTo-SecureString "P@ssw0rd" -AsPlainText -Force)
         # Creates and stores a credential using provided username and password
+    .OUTPUTS
+        [PSObject] with Id, UserName and Credential properties
     #>
     [CmdletBinding(DefaultParameterSetName = 'Credential', SupportsShouldProcess = $true)]
-    [OutputType([bool])]
+    [OutputType([PSObject])]
     param (
-        [Parameter(Mandatory = $true, Position = 0)]
-        [string]$Target,
+        [Parameter(Mandatory = $true, Position = 0, ValueFromPipelineByPropertyName = $true)]
+        [string]$Id,
         
-        [Parameter(Mandatory = $true, ParameterSetName = 'Credential', Position = 1)]
+        [Parameter(Mandatory = $true, ParameterSetName = 'Credential', Position = 1, ValueFromPipeline = $true)]
         [System.Management.Automation.PSCredential]$Credential,
         
         [Parameter(Mandatory = $true, ParameterSetName = 'UsernamePassword', Position = 1)]
@@ -38,39 +40,46 @@ function Set-StoredCredential {
         [switch]$Force
     )
     
-    # If username/password provided, create credential object using PowerShell 7 constructor syntax
-    if ($PSCmdlet.ParameterSetName -eq 'UsernamePassword') {
-        $Credential = [System.Management.Automation.PSCredential]::new($UserName, $Password)
-    }
-    
-    # Check if credential already exists with improved flow control
-    try {
-        $existingCred = Get-StoredCredential -Target $Target -ErrorAction Stop
-        
-        # Use PowerShell 7's improved conditional logic
-        if ($existingCred -and -not $Force -and -not $PSCmdlet.ShouldProcess($Target, "Overwrite existing credential")) {
-            Write-Warning "A credential with target '$Target' already exists. Use -Force to overwrite."
-            return $false
+    process {
+        # If username/password provided, create credential object using PowerShell 7 constructor syntax
+        if ($PSCmdlet.ParameterSetName -eq 'UsernamePassword') {
+            $Credential = [System.Management.Automation.PSCredential]::new($UserName, $Password)
         }
-    }
-    catch {
-        # Credential doesn't exist, continue
-    }
-    
-    # Execute platform-specific implementation using PowerShell 7 switch expression
-    $result = switch (Get-OSPlatform) {
-        'Windows' { Invoke-WindowsCredentialManager -Operation Set -Target $Target -Credential $Credential }
-        'MacOS'   { Invoke-MacOSKeychain -Operation Set -Target $Target -Credential $Credential }
-        'Linux'   { Invoke-LinuxKeyring -Operation Set -Target $Target -Credential $Credential }
-    }
-    
-    # Return the result with appropriate message
-    if ($result) {
-        Write-Verbose "Successfully stored credential for target '$Target'"
-        return $true
-    }
-    else {
-        Write-Error "Failed to store credential for target '$Target'"
-        return $false
+        
+        # Check if credential already exists with improved flow control
+        try {
+            $existingCred = Get-StoredCredential -Id $Id -ErrorAction Stop
+            
+            # Use PowerShell 7's improved conditional logic
+            if ($existingCred -and -not $Force -and -not $PSCmdlet.ShouldProcess($Id, "Overwrite existing credential")) {
+                Write-Warning "A credential with ID '$Id' already exists. Use -Force to overwrite."
+                return $null
+            }
+        }
+        catch {
+            # Credential doesn't exist, continue
+        }
+        
+        # Execute platform-specific implementation using PowerShell 7 switch expression
+        $result = switch (Get-OSPlatform) {
+            'Windows' { Invoke-WindowsCredentialManager -Operation Set -Target $Id -Credential $Credential }
+            'MacOS'   { Invoke-MacOSKeychain -Operation Set -Target $Id -Credential $Credential }
+            'Linux'   { Invoke-LinuxKeyring -Operation Set -Target $Id -Credential $Credential }
+        }
+        
+        # Return the result with appropriate message and credentials object
+        if ($result) {
+            Write-Host "Credential for ID '$Id' set successfully."
+            # Return the credential as a consistent object format
+            return [PSCustomObject]@{
+                Id = $Id
+                UserName = $Credential.UserName
+                Credential = $Credential
+            }
+        }
+        else {
+            Write-Error "Failed to store credential for ID '$Id'"
+            return $null
+        }
     }
 }

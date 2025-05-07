@@ -7,7 +7,9 @@ function Invoke-WindowsCredentialManager {
     .PARAMETER Operation
         The operation to perform (Get, Set, Remove, List)
     .PARAMETER Target
-        The identifier for the credential
+        The identifier for the credential (legacy parameter)
+    .PARAMETER Id
+        The identifier for the credential (preferred parameter)
     .PARAMETER Credential
         The credential object to store (for Set operation)
     #>
@@ -21,8 +23,11 @@ function Invoke-WindowsCredentialManager {
         [ValidateSet('Get', 'Set', 'Remove', 'List')]
         [string]$Operation,
         
-        [Parameter(Mandatory = $true)]
+        [Parameter(Mandatory = $false)]
         [string]$Target,
+        
+        [Parameter(Mandatory = $false)]
+        [string]$Id,
         
         [Parameter()]
         [System.Management.Automation.PSCredential]$Credential
@@ -33,12 +38,15 @@ function Invoke-WindowsCredentialManager {
         throw "Invoke-WindowsCredentialManager can only be used on Windows"
     }
     
+    # Use Id if provided, otherwise fall back to Target for backward compatibility
+    $credentialId = if ($Id) { $Id } else { $Target }
+    
     Add-Type -AssemblyName System.Security
     
     return $(switch ($Operation) {
         'Get' {
             try {
-                $nativeCred = [CredentialManager.CredentialManager]::GetCredentials($Target)
+                $nativeCred = [CredentialManager.CredentialManager]::GetCredentials($credentialId)
                 if ($nativeCred) {
                     # Create a PowerShell credential object
                     $securePassword = ConvertTo-SecureString $nativeCred.Password -AsPlainText -Force
@@ -63,7 +71,7 @@ function Invoke-WindowsCredentialManager {
                 $password = $Credential.GetNetworkCredential().Password
                 
                 # Save credential and return result
-                [CredentialManager.CredentialManager]::SaveCredentials($Target, $Credential.UserName, $password)
+                [CredentialManager.CredentialManager]::SaveCredentials($credentialId, $Credential.UserName, $password)
             }
             catch {
                 Write-Error "Failed to save credential: $_" -ErrorAction Continue
@@ -72,7 +80,7 @@ function Invoke-WindowsCredentialManager {
         }
         'Remove' {
             try {
-                [CredentialManager.CredentialManager]::DeleteCredentials($Target)
+                [CredentialManager.CredentialManager]::DeleteCredentials($credentialId)
             }
             catch {
                 Write-Error "Failed to remove credential: $_" -ErrorAction Continue

@@ -5,44 +5,62 @@ function Remove-StoredCredential {
     .DESCRIPTION
         Deletes a previously saved credential from the Windows Credential Manager, MacOS Keychain, 
         or Linux Keyring/Secret Service depending on the platform.
-    .PARAMETER Target
+    .PARAMETER Id
         A unique identifier for the credential to remove
     .PARAMETER Force
         If specified, removes the credential without prompting for confirmation
     .EXAMPLE
-        Remove-StoredCredential -Target "MyApp"
+        Remove-StoredCredential -Id "MyApp"
         # Removes the stored credential for "MyApp"
+    .EXAMPLE
+        Get-StoredCredential | Remove-StoredCredential -Force
+        # Removes all stored credentials without prompting for confirmation
     .OUTPUTS
-        [Boolean] True if successful, False if failed
+        [PSObject] with Id and Status properties
     #>
     [CmdletBinding(SupportsShouldProcess = $true)]
-    [OutputType([bool])]
+    [OutputType([PSObject])]
     param (
-        [Parameter(Mandatory = $true, Position = 0)]
-        [string]$Target,
+        [Parameter(Mandatory = $true, Position = 0, ValueFromPipelineByPropertyName = $true)]
+        [string]$Id,
         
         [Parameter()]
         [switch]$Force
     )
     
-    # Confirm whether to proceed
-    if (-not $Force -and -not $PSCmdlet.ShouldProcess($Target, 'Remove credential')) {
-        return $false
-    }
-    
-    # Execute platform-specific implementation
-    $result = switch (Get-OSPlatform) {
-        'Windows' { Invoke-WindowsCredentialManager -Operation Remove -Target $Target }
-        'MacOS'   { Invoke-MacOSKeychain -Operation Remove -Target $Target }
-        'Linux'   { Invoke-LinuxKeyring -Operation Remove -Target $Target }
-    }
-    
-    # Return result with verbose or error
-    if ($result) {
-        Write-Verbose "Successfully removed credential for target '$Target'"
-        return $true
-    } else {
-        Write-Error "Failed to remove credential for target '$Target'"
-        return $false
+    process {
+        # Confirm whether to proceed
+        if (-not $Force -and -not $PSCmdlet.ShouldProcess($Id, 'Remove credential')) {
+            return [PSCustomObject]@{
+                Id = $Id
+                Status = "Skipped"
+                Message = "Operation canceled by user"
+            }
+        }
+        
+        # Execute platform-specific implementation
+        $result = switch (Get-OSPlatform) {
+            'Windows' { Invoke-WindowsCredentialManager -Operation Remove -Target $Id }
+            'MacOS'   { Invoke-MacOSKeychain -Operation Remove -Target $Id }
+            'Linux'   { Invoke-LinuxKeyring -Operation Remove -Target $Id }
+        }
+        
+        # Return result with console output and object
+        if ($result) {
+            Write-Host "Successfully removed credential for ID '$Id'"
+            return [PSCustomObject]@{
+                Id = $Id
+                Status = "Success"
+                Message = "Credential removed successfully"
+            }
+        } else {
+            $errorMsg = "Failed to remove credential for ID '$Id'"
+            Write-Error $errorMsg
+            return [PSCustomObject]@{
+                Id = $Id
+                Status = "Failed"
+                Message = $errorMsg
+            }
+        }
     }
 }

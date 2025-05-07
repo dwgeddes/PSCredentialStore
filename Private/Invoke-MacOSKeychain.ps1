@@ -7,7 +7,9 @@ function Invoke-MacOSKeychain {
     .PARAMETER Operation
         The operation to perform (Get, Set, Remove, List)
     .PARAMETER Target
-        The identifier for the credential
+        The identifier for the credential (legacy parameter)
+    .PARAMETER Id
+        The identifier for the credential (preferred parameter)
     .PARAMETER Credential
         The credential object to store (for Set operation)
     #>
@@ -21,8 +23,11 @@ function Invoke-MacOSKeychain {
         [ValidateSet('Get', 'Set', 'Remove', 'List')]
         [string]$Operation,
         
-        [Parameter(Mandatory = $true)]
+        [Parameter(Mandatory = $false)]
         [string]$Target,
+        
+        [Parameter(Mandatory = $false)]
+        [string]$Id,
         
         [Parameter()]
         [System.Management.Automation.PSCredential]$Credential
@@ -33,7 +38,10 @@ function Invoke-MacOSKeychain {
         throw "Invoke-MacOSKeychain can only be used on macOS"
     }
     
-    $serviceName = "PSCredentialStore:$Target"
+    # Use Id if provided, otherwise fall back to Target for backward compatibility
+    $credentialId = if ($Id) { $Id } else { $Target }
+    
+    $serviceName = "PSCredentialStore:$credentialId"
     $metadataFile = Join-Path $env:HOME ".pscredstore_metadata"
     
     return $(switch ($Operation) {
@@ -42,7 +50,7 @@ function Invoke-MacOSKeychain {
                 # First, check if the password exists
                 $passwordOutput = $null
                 try {
-                    $passwordOutput = security find-generic-password -s "$serviceName" -a "$Target" -w 2>$null
+                    $passwordOutput = security find-generic-password -s "$serviceName" -a "$credentialId" -w 2>$null
                 }
                 catch {
                     # An exception likely means the credential wasn't found
@@ -55,19 +63,19 @@ function Invoke-MacOSKeychain {
                 }
                 
                 # Get the username from our metadata file if possible
-                $username = $Target # Default to using the target name
+                $username = $credentialId # Default to using the id as username
                 if (Test-Path $metadataFile) {
                     try {
                         $metadataContent = Get-Content $metadataFile -Raw -ErrorAction SilentlyContinue
                         if ($metadataContent) {
                             $metadata = ConvertFrom-Json $metadataContent -ErrorAction SilentlyContinue
-                            if ($metadata."$Target") {
-                                $username = $metadata."$Target"
+                            if ($metadata."$credentialId") {
+                                $username = $metadata."$credentialId"
                             }
                         }
                     }
                     catch {
-                        Write-Verbose "Could not read metadata file, using target as username"
+                        Write-Verbose "Could not read metadata file, using id as username"
                     }
                 }
                 
@@ -90,10 +98,10 @@ function Invoke-MacOSKeychain {
                 $password = $Credential.GetNetworkCredential().Password
                 
                 # Remove any existing entry first - ignore errors
-                security delete-generic-password -s "$serviceName" -a "$Target" 2>&1 > $null
+                security delete-generic-password -s "$serviceName" -a "$credentialId" 2>&1 > $null
                 
                 # Add the entry with the password
-                $result = security add-generic-password -s "$serviceName" -a "$Target" -w "$password" -U -T /usr/bin/security 2>&1
+                $result = security add-generic-password -s "$serviceName" -a "$credentialId" -w "$password" -U -T /usr/bin/security 2>&1
                 $exitCode = $?
                 
                 if (-not $exitCode) {
@@ -120,7 +128,7 @@ function Invoke-MacOSKeychain {
                     }
                 }
                 
-                $metadata[$Target] = $username
+                $metadata[$credentialId] = $username
                 $metadataJson = ConvertTo-Json $metadata -Compress
                 Set-Content -Path $metadataFile -Value $metadataJson -Force
                 
@@ -136,7 +144,7 @@ function Invoke-MacOSKeychain {
                 # Try to delete the credential - ignore the return value
                 # Note: security will exit with non-zero if item doesn't exist
                 try {
-                    security delete-generic-password -s "$serviceName" -a "$Target" 2>$null
+                    security delete-generic-password -s "$serviceName" -a "$credentialId" 2>$null
                 }
                 catch {
                     # Ignore errors during deletion attempt
@@ -148,8 +156,8 @@ function Invoke-MacOSKeychain {
                         $metadataContent = Get-Content $metadataFile -Raw -ErrorAction SilentlyContinue
                         if ($metadataContent) {
                             $metadata = ConvertFrom-Json $metadataContent -AsHashtable -ErrorAction SilentlyContinue
-                            if ($metadata.ContainsKey($Target)) {
-                                $metadata.Remove($Target)
+                            if ($metadata.ContainsKey($credentialId)) {
+                                $metadata.Remove($credentialId)
                                 $metadataJson = ConvertTo-Json $metadata -Compress
                                 Set-Content -Path $metadataFile -Value $metadataJson -Force
                             }
@@ -163,14 +171,14 @@ function Invoke-MacOSKeychain {
                 # Verify it's actually gone by trying to retrieve the password
                 # This is more reliable than checking if the delete command succeeded
                 try {
-                    $check = security find-generic-password -s "$serviceName" -a "$Target" -w 2>$null
+                    $check = security find-generic-password -s "$serviceName" -a "$credentialId" -w 2>$null
                     if ($check) {
                         Write-Verbose "Credential still exists after deletion attempt. Trying one more time."
                         # Try one more delete with more force
-                        security delete-generic-password -s "$serviceName" -a "$Target" -D 2>$null
+                        security delete-generic-password -s "$serviceName" -a "$credentialId" -D 2>$null
                         
                         # Check again
-                        $checkAgain = security find-generic-password -s "$serviceName" -a "$Target" -w 2>$null
+                        $checkAgain = security find-generic-password -s "$serviceName" -a "$credentialId" -w 2>$null
                         if ($checkAgain) {
                             return $false
                         }
